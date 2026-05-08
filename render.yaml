@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bateacontrol-backend
+    runtime: python3
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://batea_user:dR6s843x9hKEtWrIABRtvCIufRXfOVPP@dpg-d7v0bjj7uimc739bhhkg-a/bateacontrol
+      - key: SECRET_KEY
+        value: bateacontrol-secret-key-municipal-2024
