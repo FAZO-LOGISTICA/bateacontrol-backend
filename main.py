@@ -5,8 +5,9 @@ from typing import Optional, List
 import psycopg2
 import psycopg2.extras
 import os
-from datetime import datetime, date
+from datetime import datetime
 import uuid
+import math
 
 app = FastAPI(
     title="BateaControl API",
@@ -30,7 +31,6 @@ def get_db():
     return conn
 
 def init_db():
-    """Crear tablas si no existen"""
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
@@ -50,8 +50,21 @@ def init_db():
             fecha_solicitud TIMESTAMP DEFAULT NOW(),
             fecha_asignacion TIMESTAMP,
             numero_batea VARCHAR(30),
+            grupo_id VARCHAR(50),
             creado_en TIMESTAMP DEFAULT NOW(),
             actualizado_en TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS grupos_territoriales (
+            id VARCHAR(50) PRIMARY KEY,
+            codigo_grupo VARCHAR(30) UNIQUE,
+            numero_batea VARCHAR(30),
+            centroide_lat DECIMAL(10,8),
+            centroide_lon DECIMAL(11,8),
+            radio_metros INTEGER DEFAULT 100,
+            total_vecinos INTEGER DEFAULT 0,
+            fecha_creacion TIMESTAMP DEFAULT NOW()
         )
     """)
     cur.execute("""
@@ -71,7 +84,6 @@ def init_db():
     cur.close()
     conn.close()
 
-# Inicializar DB al arrancar
 try:
     init_db()
 except Exception as e:
@@ -89,25 +101,6 @@ class SolicitudCreate(BaseModel):
     observaciones: Optional[str] = ""
     foto_url: Optional[str] = ""
 
-class SolicitudResponse(BaseModel):
-    id: str
-    folio: str
-    nombre_vecino: str
-    rut: str
-    direccion: str
-    telefono: Optional[str]
-    latitud: float
-    longitud: float
-    observaciones: Optional[str]
-    foto_url: Optional[str]
-    estado: str
-    nivel_alerta: str
-    fecha_solicitud: str
-    dias_pendiente: int
-    numero_batea: Optional[str]
-    tuvo_batea_antes: bool
-    historial_previo: List[dict]
-
 # ── UTILIDADES ────────────────────────────────────────────────────────────────
 
 def calcular_folio(conn) -> str:
@@ -118,23 +111,31 @@ def calcular_folio(conn) -> str:
     cur.close()
     return f"SOL-{anio}-{str(total + 1).zfill(4)}"
 
-def calcular_alerta(fecha_solicitud) -> str:
-    dias = (datetime.now() - fecha_solicitud).days
+def calcular_dias(fecha_solicitud) -> int:
+    return (datetime.now() - fecha_solicitud).days
+
+def calcular_alerta(dias: int) -> str:
     if dias >= 20:
         return "critica"
     elif dias >= 11:
         return "advertencia"
     return "normal"
 
-def calcular_dias(fecha_solicitud) -> int:
-    return (datetime.now() - fecha_solicitud).days
+def distancia_metros(lat1, lon1, lat2, lon2) -> float:
+    """Calcula distancia en metros entre dos coordenadas usando Haversine"""
+    R = 6371000  # radio tierra en metros
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 def obtener_historial_vecino(conn, rut: str) -> List[dict]:
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("""
         SELECT numero_batea, fecha_asignacion, direccion, observaciones
-        FROM historial_bateas
-        WHERE rut = %s
+        FROM historial_bateas WHERE rut = %s
         ORDER BY fecha_asignacion DESC
     """, [rut])
     rows = cur.fetchall()
@@ -144,12 +145,27 @@ def obtener_historial_vecino(conn, rut: str) -> List[dict]:
             "numero_batea": r["numero_batea"],
             "fecha_asignacion": r["fecha_asignacion"].strftime("%d/%m/%Y") if r["fecha_asignacion"] else "",
             "direccion": r["direccion"],
-            "observaciones": r["observaciones"] or ""
         }
         for r in rows
     ]
 
-# ── ENDPOINTS ─────────────────────────────────────────────────────────────────
+def generar_numero_batea(conn) -> str:
+    anio = datetime.now().year
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM grupos_territoriales WHERE codigo_grupo LIKE %s", [f"GT-{anio}-%"])
+    total = cur.fetchone()[0]
+    cur.close()
+    return f"BC-{anio}-{str(total + 1).zfill(4)}"
+
+def generar_codigo_grupo(conn) -> str:
+    anio = datetime.now().year
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM grupos_territoriales WHERE codigo_grupo LIKE %s", [f"GT-{anio}-%"])
+    total = cur.fetchone()[0]
+    cur.close()
+    return f"GT-{anio}-{str(total + 1).zfill(4)}"
+
+# ── ENDPOINTS BASE ────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -165,41 +181,34 @@ def health():
 def crear_solicitud(data: SolicitudCreate):
     conn = get_db()
     try:
-        # Verificar si ya tiene solicitud pendiente
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Verificar solicitud pendiente duplicada
         cur.execute("""
             SELECT id, folio, fecha_solicitud FROM solicitudes
-            WHERE rut = %s AND estado IN ('pendiente', 'agrupada')
+            WHERE rut = %s AND estado IN ('pendiente','agrupada')
         """, [data.rut])
         pendiente = cur.fetchone()
         if pendiente:
             cur.close()
             conn.close()
-            raise HTTPException(
-                status_code=400,
-                detail=f"Este vecino ya tiene una solicitud pendiente: {pendiente['folio']} del {pendiente['fecha_solicitud'].strftime('%d/%m/%Y')}"
-            )
+            raise HTTPException(status_code=400,
+                detail=f"Este vecino ya tiene solicitud pendiente: {pendiente['folio']} del {pendiente['fecha_solicitud'].strftime('%d/%m/%Y')}")
 
-        # Obtener historial previo
         historial = obtener_historial_vecino(conn, data.rut)
         tuvo_batea = len(historial) > 0
-
-        # Generar folio e ID
         folio = calcular_folio(conn)
         solicitud_id = str(uuid.uuid4())
 
-        # Insertar solicitud
         cur.execute("""
             INSERT INTO solicitudes (
                 id, folio, nombre_vecino, rut, direccion, telefono,
                 latitud, longitud, observaciones, foto_url,
                 estado, nivel_alerta, fecha_solicitud
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pendiente','normal',NOW())
-        """, [
-            solicitud_id, folio, data.nombre_vecino, data.rut,
-            data.direccion, data.telefono, data.latitud, data.longitud,
-            data.observaciones, data.foto_url
-        ])
+        """, [solicitud_id, folio, data.nombre_vecino, data.rut,
+              data.direccion, data.telefono, data.latitud, data.longitud,
+              data.observaciones, data.foto_url])
 
         conn.commit()
         cur.close()
@@ -212,7 +221,7 @@ def crear_solicitud(data: SolicitudCreate):
             "mensaje": "Solicitud registrada exitosamente",
             "tuvo_batea_antes": tuvo_batea,
             "historial_previo": historial,
-            "alerta_duplicado": f"⚠️ Este vecino ya recibió batea anteriormente el {historial[0]['fecha_asignacion']} en {historial[0]['direccion']}" if tuvo_batea else None
+            "alerta_duplicado": f"⚠️ Este vecino ya recibió batea el {historial[0]['fecha_asignacion']} en {historial[0]['direccion']}" if tuvo_batea else None
         }
 
     except HTTPException:
@@ -230,19 +239,18 @@ def listar_solicitudes(estado: Optional[str] = None):
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Actualizar niveles de alerta automáticamente
+        # Actualizar alertas automáticamente
         cur.execute("""
             UPDATE solicitudes SET nivel_alerta = CASE
                 WHEN EXTRACT(DAY FROM (NOW() - fecha_solicitud)) >= 20 THEN 'critica'
                 WHEN EXTRACT(DAY FROM (NOW() - fecha_solicitud)) >= 11 THEN 'advertencia'
                 ELSE 'normal'
-            END
-            WHERE estado = 'pendiente'
+            END WHERE estado = 'pendiente'
         """)
         conn.commit()
 
         if estado:
-            cur.execute("SELECT * FROM solicitudes WHERE estado = %s ORDER BY fecha_solicitud ASC", [estado])
+            cur.execute("SELECT * FROM solicitudes WHERE estado=%s ORDER BY fecha_solicitud ASC", [estado])
         else:
             cur.execute("""
                 SELECT * FROM solicitudes
@@ -257,7 +265,10 @@ def listar_solicitudes(estado: Optional[str] = None):
 
         resultado = []
         for r in rows:
-            historial = obtener_historial_vecino(get_db(), r["rut"])
+            conn2 = get_db()
+            historial = obtener_historial_vecino(conn2, r["rut"])
+            conn2.close()
+            dias = calcular_dias(r["fecha_solicitud"])
             resultado.append({
                 "id": r["id"],
                 "folio": r["folio"],
@@ -270,10 +281,11 @@ def listar_solicitudes(estado: Optional[str] = None):
                 "observaciones": r["observaciones"] or "",
                 "foto_url": r["foto_url"] or "",
                 "estado": r["estado"],
-                "nivel_alerta": r["nivel_alerta"],
+                "nivel_alerta": calcular_alerta(dias),
                 "fecha_solicitud": r["fecha_solicitud"].strftime("%d/%m/%Y %H:%M"),
-                "dias_pendiente": calcular_dias(r["fecha_solicitud"]),
+                "dias_pendiente": dias,
                 "numero_batea": r["numero_batea"] or "",
+                "grupo_id": r["grupo_id"] or "",
                 "tuvo_batea_antes": len(historial) > 0,
                 "historial_previo": historial
             })
@@ -284,22 +296,17 @@ def listar_solicitudes(estado: Optional[str] = None):
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ── VERIFICAR VECINO POR RUT ──────────────────────────────────────────────────
+# ── HISTORIAL VECINO ──────────────────────────────────────────────────────────
 
 @app.get("/api/vecinos/{rut}/historial")
 def historial_vecino(rut: str):
-    """Verifica si un vecino ya tuvo batea asignada anteriormente"""
     conn = get_db()
     try:
         historial = obtener_historial_vecino(conn, rut)
-
-        # También verificar solicitudes anteriores
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT folio, estado, fecha_solicitud, numero_batea, direccion
-            FROM solicitudes
-            WHERE rut = %s
-            ORDER BY fecha_solicitud DESC
+            FROM solicitudes WHERE rut=%s ORDER BY fecha_solicitud DESC
         """, [rut])
         solicitudes_previas = cur.fetchall()
         cur.close()
@@ -308,7 +315,6 @@ def historial_vecino(rut: str):
         return {
             "rut": rut,
             "tuvo_batea_antes": len(historial) > 0,
-            "total_solicitudes_historicas": len(solicitudes_previas),
             "historial_bateas": historial,
             "solicitudes_previas": [
                 {
@@ -322,8 +328,194 @@ def historial_vecino(rut: str):
             ],
             "alerta": f"⚠️ Este vecino ya recibió batea el {historial[0]['fecha_asignacion']} en {historial[0]['direccion']}" if historial else None
         }
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── CLUSTERING GEOESPACIAL ────────────────────────────────────────────────────
+
+@app.post("/api/clustering/ejecutar")
+def ejecutar_clustering(radio_metros: int = 100):
+    """
+    Motor de clustering geoespacial.
+    - Prioriza solicitudes más antiguas y críticas
+    - Agrupa TODAS las solicitudes pendientes
+    - Radio configurable (default 100m)
+    - Evita duplicar bateas en zonas ya cubiertas
+    - Genera múltiples grupos en un solo click
+    """
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Cargar TODAS las solicitudes pendientes ordenadas por prioridad
+        # Prioridad: críticas primero, luego por días (más antiguas primero)
+        cur.execute("""
+            SELECT id, nombre_vecino, rut, direccion,
+                   CAST(latitud AS FLOAT) as latitud,
+                   CAST(longitud AS FLOAT) as longitud,
+                   fecha_solicitud,
+                   EXTRACT(DAY FROM (NOW() - fecha_solicitud))::INTEGER as dias
+            FROM solicitudes
+            WHERE estado = 'pendiente'
+              AND latitud IS NOT NULL
+              AND longitud IS NOT NULL
+            ORDER BY
+                CASE
+                    WHEN EXTRACT(DAY FROM (NOW() - fecha_solicitud)) >= 20 THEN 1
+                    WHEN EXTRACT(DAY FROM (NOW() - fecha_solicitud)) >= 11 THEN 2
+                    ELSE 3
+                END,
+                fecha_solicitud ASC
+        """)
+        pendientes = cur.fetchall()
+
+        if not pendientes:
+            cur.close()
+            conn.close()
+            return {
+                "success": True,
+                "grupos_creados": 0,
+                "bateas_asignadas": 0,
+                "solicitudes_agrupadas": 0,
+                "grupos_omitidos": 0,
+                "mensaje": "No hay solicitudes pendientes",
+                "detalle_grupos": []
+            }
+
+        # Obtener bateas ya existentes para evitar duplicados
+        cur.execute("""
+            SELECT CAST(centroide_lat AS FLOAT) as lat,
+                   CAST(centroide_lon AS FLOAT) as lon
+            FROM grupos_territoriales
+        """)
+        bateas_existentes = cur.fetchall()
+
+        # ── ALGORITMO DBSCAN SIMPLIFICADO ────────────────────────────────────
+        visitados = set()
+        grupos = []
+
+        for solicitud in pendientes:
+            if solicitud["id"] in visitados:
+                continue
+
+            # Iniciar nuevo cluster con esta solicitud como semilla
+            cluster = [solicitud]
+            visitados.add(solicitud["id"])
+
+            # Buscar todos los vecinos dentro del radio
+            for otra in pendientes:
+                if otra["id"] in visitados:
+                    continue
+                dist = distancia_metros(
+                    solicitud["latitud"], solicitud["longitud"],
+                    otra["latitud"], otra["longitud"]
+                )
+                if dist <= radio_metros:
+                    cluster.append(otra)
+                    visitados.add(otra["id"])
+
+            # Calcular centroide del cluster
+            cent_lat = sum(s["latitud"] for s in cluster) / len(cluster)
+            cent_lon = sum(s["longitud"] for s in cluster) / len(cluster)
+
+            # Verificar si ya existe batea cerca del centroide
+            batea_cercana = False
+            for b in bateas_existentes:
+                dist = distancia_metros(cent_lat, cent_lon, b["lat"], b["lon"])
+                if dist <= radio_metros:
+                    batea_cercana = True
+                    break
+
+            grupos.append({
+                "solicitudes": cluster,
+                "centroide_lat": cent_lat,
+                "centroide_lon": cent_lon,
+                "batea_cercana": batea_cercana
+            })
+
+        # ── CREAR GRUPOS Y ASIGNAR BATEAS ─────────────────────────────────────
+        resumen = {
+            "grupos_creados": 0,
+            "bateas_asignadas": 0,
+            "solicitudes_agrupadas": 0,
+            "grupos_omitidos": 0,
+            "detalle_grupos": []
+        }
+
+        for grupo in grupos:
+            if grupo["batea_cercana"]:
+                resumen["grupos_omitidos"] += 1
+                continue
+
+            grupo_id = str(uuid.uuid4())
+            codigo_grupo = generar_codigo_grupo(conn)
+            numero_batea = generar_numero_batea(conn)
+
+            # Insertar grupo territorial
+            cur.execute("""
+                INSERT INTO grupos_territoriales (
+                    id, codigo_grupo, numero_batea,
+                    centroide_lat, centroide_lon,
+                    radio_metros, total_vecinos, fecha_creacion
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+            """, [
+                grupo_id, codigo_grupo, numero_batea,
+                grupo["centroide_lat"], grupo["centroide_lon"],
+                radio_metros, len(grupo["solicitudes"])
+            ])
+
+            # Actualizar todas las solicitudes del grupo
+            ids = [s["id"] for s in grupo["solicitudes"]]
+            for sol_id in ids:
+                cur.execute("""
+                    UPDATE solicitudes
+                    SET estado='asignada',
+                        grupo_id=%s,
+                        numero_batea=%s,
+                        fecha_asignacion=NOW(),
+                        actualizado_en=NOW()
+                    WHERE id=%s
+                """, [grupo_id, numero_batea, sol_id])
+
+                # Registrar en historial para cada vecino
+                sol = next(s for s in grupo["solicitudes"] if s["id"] == sol_id)
+                cur.execute("""
+                    INSERT INTO historial_bateas (
+                        id, rut, nombre_vecino, direccion,
+                        numero_batea, fecha_asignacion
+                    ) VALUES (%s,%s,%s,%s,%s,NOW())
+                """, [
+                    str(uuid.uuid4()),
+                    sol["rut"],
+                    sol["nombre_vecino"],
+                    sol["direccion"],
+                    numero_batea
+                ])
+
+            conn.commit()
+
+            resumen["grupos_creados"] += 1
+            resumen["bateas_asignadas"] += 1
+            resumen["solicitudes_agrupadas"] += len(grupo["solicitudes"])
+            resumen["detalle_grupos"].append({
+                "codigo_grupo": codigo_grupo,
+                "numero_batea": numero_batea,
+                "vecinos": len(grupo["solicitudes"]),
+                "centroide_lat": grupo["centroide_lat"],
+                "centroide_lon": grupo["centroide_lon"],
+                "nombres": [s["nombre_vecino"] for s in grupo["solicitudes"]]
+            })
+
+        cur.close()
+        conn.close()
+
+        resumen["success"] = True
+        resumen["mensaje"] = f"{resumen['grupos_creados']} grupos creados, {resumen['bateas_asignadas']} bateas asignadas, {resumen['solicitudes_agrupadas']} vecinos atendidos"
+        return resumen
 
     except Exception as e:
+        conn.rollback()
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -343,10 +535,12 @@ def kpis_dashboard():
                 COUNT(*) as total
             FROM solicitudes
         """)
-        kpis = cur.fetchone()
+        kpis = dict(cur.fetchone())
+        cur.execute("SELECT COUNT(*) as grupos FROM grupos_territoriales")
+        kpis["grupos"] = cur.fetchone()["grupos"]
         cur.close()
         conn.close()
-        return dict(kpis)
+        return kpis
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
