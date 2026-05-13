@@ -34,7 +34,7 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
-    # ── TABLA SOLICITUDES (bateas) ─────────────────────────────────────────
+    # ── TABLA SOLICITUDES ──────────────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS solicitudes (
             id VARCHAR(50) PRIMARY KEY,
@@ -57,6 +57,19 @@ def init_db():
             actualizado_en TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    # Agregar columnas faltantes si no existen (para tablas ya creadas)
+    columnas_solicitudes = [
+        ("grupo_id", "VARCHAR(50)"),
+        ("numero_batea", "VARCHAR(30)"),
+        ("fecha_asignacion", "TIMESTAMP"),
+        ("actualizado_en", "TIMESTAMP DEFAULT NOW()"),
+    ]
+    for col, tipo in columnas_solicitudes:
+        try:
+            cur.execute(f"ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS {col} {tipo}")
+        except Exception:
+            conn.rollback()
 
     # ── TABLA DESMALEZADOS ─────────────────────────────────────────────────
     cur.execute("""
@@ -105,7 +118,7 @@ def init_db():
         )
     """)
 
-    # ── TABLA OPERATIVOS CONJUNTOS (Batea + Desmalezado) ──────────────────
+    # ── TABLA OPERATIVOS CONJUNTOS ─────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS operativos_conjuntos (
             id VARCHAR(50) PRIMARY KEY,
@@ -351,8 +364,8 @@ def listar_solicitudes(estado: Optional[str] = None):
                 "nivel_alerta": calcular_alerta(dias),
                 "fecha_solicitud": r["fecha_solicitud"].strftime("%d/%m/%Y %H:%M"),
                 "dias_pendiente": dias,
-                "numero_batea": r["numero_batea"] or "",
-                "grupo_id": r["grupo_id"] or "",
+                "numero_batea": r["numero_batea"] or "" if "numero_batea" in r.keys() else "",
+                "grupo_id": r["grupo_id"] or "" if "grupo_id" in r.keys() else "",
                 "tuvo_batea_antes": len(historial) > 0,
                 "historial_previo": historial
             })
@@ -382,7 +395,6 @@ def crear_desmalezado(data: DesmalezadoCreate):
               data.direccion, data.descripcion, data.latitud, data.longitud,
               data.foto_antes])
 
-        # Detectar si hay batea pendiente cercana → sugerir operativo conjunto
         cur2 = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur2.execute("""
             SELECT id, nombre_vecino, direccion, latitud, longitud
@@ -448,7 +460,6 @@ def listar_desmalezados(estado: Optional[str] = None):
                     "foto_despues": r["foto_despues"] or "",
                     "estado": r["estado"],
                     "fecha_solicitud": r["fecha_solicitud"].strftime("%d/%m/%Y %H:%M"),
-                    "fecha_ejecucion": r["fecha_ejecucion"].strftime("%d/%m/%Y") if r["fecha_ejecucion"] else "",
                     "dias_pendiente": calcular_dias(r["fecha_solicitud"])
                 }
                 for r in rows
@@ -465,12 +476,8 @@ def cerrar_desmalezado(id: str, data: DesmalezadoCierre):
     try:
         cur = conn.cursor()
         cur.execute("""
-            UPDATE desmalezados SET
-                estado='completado',
-                foto_despues=%s,
-                observaciones_cierre=%s,
-                fecha_cierre=NOW()
-            WHERE id=%s
+            UPDATE desmalezados SET estado='completado', foto_despues=%s,
+            observaciones_cierre=%s, fecha_cierre=NOW() WHERE id=%s
         """, [data.foto_despues, data.observaciones_cierre, id])
         conn.commit()
         cur.close()
@@ -496,8 +503,7 @@ def crear_camino(data: CaminoCreate):
             INSERT INTO arreglo_caminos (
                 id, folio, nombre_solicitante, es_recordatorio,
                 direccion, tipo_camino, descripcion_problema,
-                latitud, longitud, foto_antes,
-                estado, prioridad, fecha_solicitud
+                latitud, longitud, foto_antes, estado, prioridad, fecha_solicitud
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pendiente',%s,NOW())
         """, [cid, folio, data.nombre_solicitante, data.es_recordatorio,
               data.direccion, data.tipo_camino, data.descripcion_problema,
@@ -505,10 +511,7 @@ def crear_camino(data: CaminoCreate):
         conn.commit()
         cur.close()
         conn.close()
-        return {
-            "success": True, "id": cid, "folio": folio,
-            "mensaje": "Arreglo de camino registrado exitosamente"
-        }
+        return {"success": True, "id": cid, "folio": folio, "mensaje": "Arreglo de camino registrado exitosamente"}
     except Exception as e:
         conn.rollback()
         conn.close()
@@ -563,12 +566,8 @@ def cerrar_camino(id: str, data: CaminoCierre):
     try:
         cur = conn.cursor()
         cur.execute("""
-            UPDATE arreglo_caminos SET
-                estado='completado',
-                foto_despues=%s,
-                observaciones_cierre=%s,
-                fecha_cierre=NOW()
-            WHERE id=%s
+            UPDATE arreglo_caminos SET estado='completado', foto_despues=%s,
+            observaciones_cierre=%s, fecha_cierre=NOW() WHERE id=%s
         """, [data.foto_despues, data.observaciones_cierre, id])
         conn.commit()
         cur.close()
@@ -580,7 +579,7 @@ def cerrar_camino(id: str, data: CaminoCierre):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# OPERATIVOS CONJUNTOS (Batea + Desmalezado)
+# OPERATIVOS CONJUNTOS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/operativos-conjuntos")
@@ -588,27 +587,22 @@ def crear_operativo_conjunto(solicitud_batea_id: str, desmalezado_id: str):
     conn = get_db()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-        # Obtener datos de ambos servicios
         cur.execute("SELECT * FROM solicitudes WHERE id=%s", [solicitud_batea_id])
         batea = cur.fetchone()
         cur.execute("SELECT * FROM desmalezados WHERE id=%s", [desmalezado_id])
         desmalezado = cur.fetchone()
-
         if not batea or not desmalezado:
             raise HTTPException(status_code=404, detail="Solicitud no encontrada")
 
-        # Calcular centroide entre los dos puntos
         cent_lat = (float(batea["latitud"]) + float(desmalezado["latitud"])) / 2
         cent_lon = (float(batea["longitud"]) + float(desmalezado["longitud"])) / 2
 
-        # Generar número de batea y código operativo
-        anio = datetime.now().year
         cur2 = conn.cursor()
         cur2.execute("SELECT COUNT(*) FROM operativos_conjuntos")
         total = cur2.fetchone()[0]
         cur2.close()
 
+        anio = datetime.now().year
         codigo = f"OPC-{anio}-{str(total + 1).zfill(4)}"
         numero_batea = f"BC-{anio}-{str(total + 1).zfill(4)}"
         oid = str(uuid.uuid4())
@@ -616,30 +610,20 @@ def crear_operativo_conjunto(solicitud_batea_id: str, desmalezado_id: str):
         cur.execute("""
             INSERT INTO operativos_conjuntos (
                 id, codigo, solicitud_batea_id, desmalezado_id,
-                centroide_lat, centroide_lon, numero_batea,
-                estado, fecha_planificacion
+                centroide_lat, centroide_lon, numero_batea, estado, fecha_planificacion
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,'planificado',NOW())
-        """, [oid, codigo, solicitud_batea_id, desmalezado_id,
-              cent_lat, cent_lon, numero_batea])
+        """, [oid, codigo, solicitud_batea_id, desmalezado_id, cent_lat, cent_lon, numero_batea])
 
-        # Actualizar estados
-        cur.execute("UPDATE solicitudes SET estado='asignada', numero_batea=%s WHERE id=%s",
-                    [numero_batea, solicitud_batea_id])
-        cur.execute("UPDATE desmalezados SET estado='planificado', operativo_conjunto_id=%s WHERE id=%s",
-                    [oid, desmalezado_id])
+        cur.execute("UPDATE solicitudes SET estado='asignada', numero_batea=%s WHERE id=%s", [numero_batea, solicitud_batea_id])
+        cur.execute("UPDATE desmalezados SET estado='planificado', operativo_conjunto_id=%s WHERE id=%s", [oid, desmalezado_id])
 
         conn.commit()
         cur.close()
         conn.close()
-
         return {
-            "success": True,
-            "id": oid,
-            "codigo": codigo,
+            "success": True, "id": oid, "codigo": codigo,
             "numero_batea": numero_batea,
-            "centroide_lat": cent_lat,
-            "centroide_lon": cent_lon,
-            "mensaje": f"Operativo Conjunto {codigo} creado — Batea {numero_batea} asignada al punto de desmalezado"
+            "mensaje": f"Operativo Conjunto {codigo} creado — Batea {numero_batea} asignada"
         }
     except HTTPException:
         raise
@@ -654,10 +638,8 @@ def listar_operativos_conjuntos():
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
-            SELECT oc.*,
-                s.nombre_vecino, s.direccion as direccion_batea,
-                d.direccion as direccion_desmalezado,
-                d.nombre_solicitante as solicitante_desmalezado
+            SELECT oc.*, s.nombre_vecino, s.direccion as direccion_batea,
+                d.direccion as direccion_desmalezado, d.nombre_solicitante as solicitante_desmalezado
             FROM operativos_conjuntos oc
             LEFT JOIN solicitudes s ON oc.solicitud_batea_id = s.id
             LEFT JOIN desmalezados d ON oc.desmalezado_id = d.id
@@ -669,18 +651,14 @@ def listar_operativos_conjuntos():
         return {
             "operativos": [
                 {
-                    "id": r["id"],
-                    "codigo": r["codigo"],
-                    "numero_batea": r["numero_batea"],
-                    "estado": r["estado"],
+                    "id": r["id"], "codigo": r["codigo"],
+                    "numero_batea": r["numero_batea"], "estado": r["estado"],
                     "nombre_vecino": r["nombre_vecino"],
                     "direccion_batea": r["direccion_batea"],
                     "direccion_desmalezado": r["direccion_desmalezado"],
-                    "solicitante_desmalezado": r["solicitante_desmalezado"],
                     "centroide_lat": float(r["centroide_lat"]) if r["centroide_lat"] else 0,
                     "centroide_lon": float(r["centroide_lon"]) if r["centroide_lon"] else 0,
                     "fecha_planificacion": r["fecha_planificacion"].strftime("%d/%m/%Y %H:%M"),
-                    "fecha_ejecucion": r["fecha_ejecucion"].strftime("%d/%m/%Y") if r["fecha_ejecucion"] else "",
                 }
                 for r in rows
             ],
@@ -691,7 +669,7 @@ def listar_operativos_conjuntos():
         raise HTTPException(status_code=500, detail=str(e))
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CLUSTERING BATEAS
+# CLUSTERING
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/clustering/ejecutar")
@@ -726,8 +704,7 @@ def ejecutar_clustering(radio_metros: int = 100):
             }
 
         cur.execute("""
-            SELECT CAST(centroide_lat AS FLOAT) as lat,
-                   CAST(centroide_lon AS FLOAT) as lon
+            SELECT CAST(centroide_lat AS FLOAT) as lat, CAST(centroide_lon AS FLOAT) as lon
             FROM grupos_territoriales
         """)
         bateas_existentes = cur.fetchall()
@@ -743,33 +720,17 @@ def ejecutar_clustering(radio_metros: int = 100):
             for otra in pendientes:
                 if otra["id"] in visitados:
                     continue
-                dist = distancia_metros(
-                    solicitud["latitud"], solicitud["longitud"],
-                    otra["latitud"], otra["longitud"]
-                )
+                dist = distancia_metros(solicitud["latitud"], solicitud["longitud"], otra["latitud"], otra["longitud"])
                 if dist <= radio_metros:
                     cluster.append(otra)
                     visitados.add(otra["id"])
 
             cent_lat = sum(s["latitud"] for s in cluster) / len(cluster)
             cent_lon = sum(s["longitud"] for s in cluster) / len(cluster)
+            batea_cercana = any(distancia_metros(cent_lat, cent_lon, b["lat"], b["lon"]) <= radio_metros for b in bateas_existentes)
+            grupos.append({"solicitudes": cluster, "centroide_lat": cent_lat, "centroide_lon": cent_lon, "batea_cercana": batea_cercana})
 
-            batea_cercana = any(
-                distancia_metros(cent_lat, cent_lon, b["lat"], b["lon"]) <= radio_metros
-                for b in bateas_existentes
-            )
-            grupos.append({
-                "solicitudes": cluster,
-                "centroide_lat": cent_lat,
-                "centroide_lon": cent_lon,
-                "batea_cercana": batea_cercana
-            })
-
-        resumen = {
-            "grupos_creados": 0, "bateas_asignadas": 0,
-            "solicitudes_agrupadas": 0, "grupos_omitidos": 0,
-            "detalle_grupos": []
-        }
+        resumen = {"grupos_creados":0, "bateas_asignadas":0, "solicitudes_agrupadas":0, "grupos_omitidos":0, "detalle_grupos":[]}
 
         for grupo in grupos:
             if grupo["batea_cercana"]:
@@ -782,44 +743,28 @@ def ejecutar_clustering(radio_metros: int = 100):
             cur2.execute("SELECT COUNT(*) FROM grupos_territoriales WHERE codigo_grupo LIKE %s", [f"GT-{anio}-%"])
             total = cur2.fetchone()[0]
             cur2.close()
-            codigo_grupo = f"GT-{anio}-{str(total + 1).zfill(4)}"
-            numero_batea = f"BC-{anio}-{str(total + 1).zfill(4)}"
+            codigo_grupo = f"GT-{anio}-{str(total+1).zfill(4)}"
+            numero_batea = f"BC-{anio}-{str(total+1).zfill(4)}"
 
             cur.execute("""
-                INSERT INTO grupos_territoriales (
-                    id, codigo_grupo, numero_batea,
-                    centroide_lat, centroide_lon,
-                    radio_metros, total_vecinos, fecha_creacion
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
-            """, [grupo_id, codigo_grupo, numero_batea,
-                  grupo["centroide_lat"], grupo["centroide_lon"],
-                  radio_metros, len(grupo["solicitudes"])])
+                INSERT INTO grupos_territoriales (id, codigo_grupo, numero_batea, centroide_lat, centroide_lon, radio_metros, total_vecinos, fecha_creacion)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+            """, [grupo_id, codigo_grupo, numero_batea, grupo["centroide_lat"], grupo["centroide_lon"], radio_metros, len(grupo["solicitudes"])])
 
             for sol in grupo["solicitudes"]:
-                cur.execute("""
-                    UPDATE solicitudes SET
-                        estado='asignada', grupo_id=%s,
-                        numero_batea=%s, fecha_asignacion=NOW()
-                    WHERE id=%s
-                """, [grupo_id, numero_batea, sol["id"]])
-                cur.execute("""
-                    INSERT INTO historial_bateas (
-                        id, rut, nombre_vecino, direccion,
-                        numero_batea, fecha_asignacion
-                    ) VALUES (%s,%s,%s,%s,%s,NOW())
-                """, [str(uuid.uuid4()), sol["rut"], sol["nombre_vecino"],
-                      sol["direccion"], numero_batea])
+                cur.execute("UPDATE solicitudes SET estado='asignada', grupo_id=%s, numero_batea=%s, fecha_asignacion=NOW() WHERE id=%s",
+                            [grupo_id, numero_batea, sol["id"]])
+                cur.execute("INSERT INTO historial_bateas (id, rut, nombre_vecino, direccion, numero_batea, fecha_asignacion) VALUES (%s,%s,%s,%s,%s,NOW())",
+                            [str(uuid.uuid4()), sol["rut"], sol["nombre_vecino"], sol["direccion"], numero_batea])
 
             conn.commit()
             resumen["grupos_creados"] += 1
             resumen["bateas_asignadas"] += 1
             resumen["solicitudes_agrupadas"] += len(grupo["solicitudes"])
             resumen["detalle_grupos"].append({
-                "codigo_grupo": codigo_grupo,
-                "numero_batea": numero_batea,
+                "codigo_grupo": codigo_grupo, "numero_batea": numero_batea,
                 "vecinos": len(grupo["solicitudes"]),
-                "centroide_lat": grupo["centroide_lat"],
-                "centroide_lon": grupo["centroide_lon"],
+                "centroide_lat": grupo["centroide_lat"], "centroide_lon": grupo["centroide_lon"],
                 "nombres": [s["nombre_vecino"] for s in grupo["solicitudes"]]
             })
 
@@ -844,27 +789,21 @@ def kpis_dashboard():
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
-            SELECT
-                COUNT(*) FILTER (WHERE estado='pendiente') as pendientes,
-                COUNT(*) FILTER (WHERE nivel_alerta='critica' AND estado='pendiente') as criticas,
-                COUNT(*) FILTER (WHERE estado='asignada') as asignadas,
-                COUNT(*) as total
+            SELECT COUNT(*) FILTER (WHERE estado='pendiente') as pendientes,
+                   COUNT(*) FILTER (WHERE nivel_alerta='critica' AND estado='pendiente') as criticas,
+                   COUNT(*) FILTER (WHERE estado='asignada') as asignadas,
+                   COUNT(*) as total
             FROM solicitudes
         """)
         kpis = dict(cur.fetchone())
-
         cur.execute("SELECT COUNT(*) as grupos FROM grupos_territoriales")
         kpis["grupos"] = cur.fetchone()["grupos"]
-
-        cur.execute("SELECT COUNT(*) as desmalezados_pendientes FROM desmalezados WHERE estado='pendiente'")
-        kpis["desmalezados_pendientes"] = cur.fetchone()["desmalezados_pendientes"]
-
-        cur.execute("SELECT COUNT(*) as caminos_pendientes FROM arreglo_caminos WHERE estado='pendiente'")
-        kpis["caminos_pendientes"] = cur.fetchone()["caminos_pendientes"]
-
-        cur.execute("SELECT COUNT(*) as operativos FROM operativos_conjuntos WHERE estado='planificado'")
-        kpis["operativos_conjuntos"] = cur.fetchone()["operativos"]
-
+        cur.execute("SELECT COUNT(*) as n FROM desmalezados WHERE estado='pendiente'")
+        kpis["desmalezados_pendientes"] = cur.fetchone()["n"]
+        cur.execute("SELECT COUNT(*) as n FROM arreglo_caminos WHERE estado='pendiente'")
+        kpis["caminos_pendientes"] = cur.fetchone()["n"]
+        cur.execute("SELECT COUNT(*) as n FROM operativos_conjuntos WHERE estado='planificado'")
+        kpis["operativos_conjuntos"] = cur.fetchone()["n"]
         cur.close()
         conn.close()
         return kpis
@@ -882,10 +821,7 @@ def historial_vecino(rut: str):
     try:
         historial = obtener_historial_vecino(conn, rut)
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("""
-            SELECT folio, estado, fecha_solicitud, numero_batea, direccion
-            FROM solicitudes WHERE rut=%s ORDER BY fecha_solicitud DESC
-        """, [rut])
+        cur.execute("SELECT folio, estado, fecha_solicitud, numero_batea, direccion FROM solicitudes WHERE rut=%s ORDER BY fecha_solicitud DESC", [rut])
         solicitudes_previas = cur.fetchall()
         cur.close()
         conn.close()
@@ -894,12 +830,7 @@ def historial_vecino(rut: str):
             "tuvo_batea_antes": len(historial) > 0,
             "historial_bateas": historial,
             "solicitudes_previas": [
-                {
-                    "folio": s["folio"], "estado": s["estado"],
-                    "fecha": s["fecha_solicitud"].strftime("%d/%m/%Y"),
-                    "batea": s["numero_batea"] or "-",
-                    "direccion": s["direccion"]
-                }
+                {"folio": s["folio"], "estado": s["estado"], "fecha": s["fecha_solicitud"].strftime("%d/%m/%Y"), "batea": s["numero_batea"] or "-", "direccion": s["direccion"]}
                 for s in solicitudes_previas
             ],
             "alerta": f"⚠️ Este vecino ya recibió batea el {historial[0]['fecha_asignacion']} en {historial[0]['direccion']}" if historial else None
