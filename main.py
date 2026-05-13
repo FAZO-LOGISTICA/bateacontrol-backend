@@ -221,7 +221,8 @@ class SolicitudCreate(BaseModel):
 
 class ClusteringRequest(BaseModel):
     radio_metros: Optional[int] = 100
-    dias_uso: int = 7  # días que estará disponible la batea
+    dias_uso: int = 7
+    fecha_inicio: Optional[str] = None  # formato YYYY-MM-DD, si None usa hoy
 
 class DesmalezadoCreate(BaseModel):
     nombre_solicitante: Optional[str] = ""
@@ -718,7 +719,15 @@ def ejecutar_clustering(data: ClusteringRequest):
         if dias_uso < 1 or dias_uso > 365:
             raise HTTPException(status_code=400, detail="Los días de uso deben estar entre 1 y 365")
 
-        fecha_inicio = datetime.now()
+        # Usar fecha_inicio del request o hoy por defecto
+        if data.fecha_inicio:
+            try:
+                fecha_inicio = datetime.strptime(data.fecha_inicio, "%Y-%m-%d")
+            except ValueError:
+                fecha_inicio = datetime.now()
+        else:
+            fecha_inicio = datetime.now()
+
         fecha_termino = fecha_inicio + timedelta(days=dias_uso)
 
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
