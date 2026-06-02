@@ -742,6 +742,57 @@ def listar_operativos_conjuntos():
     except Exception as e:
         conn.close(); raise HTTPException(status_code=500,detail=str(e))
 
+@app.delete("/api/solicitudes/{id}")
+def eliminar_solicitud(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT folio FROM solicitudes WHERE id=%s", [id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+        cur.execute("DELETE FROM solicitudes WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": f"Solicitud {row[0]} eliminada correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/desmalezados/{id}")
+def eliminar_desmalezado(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT folio FROM desmalezados WHERE id=%s", [id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Desmalezado no encontrado")
+        cur.execute("DELETE FROM desmalezados WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": f"Desmalezado {row[0]} eliminado correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/caminos/{id}")
+def eliminar_camino(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT folio FROM arreglo_caminos WHERE id=%s", [id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Camino no encontrado")
+        cur.execute("DELETE FROM arreglo_caminos WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": f"Camino {row[0]} eliminado correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLUSTERING
 # ═══════════════════════════════════════════════════════════════════════════════
