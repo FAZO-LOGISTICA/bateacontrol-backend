@@ -267,6 +267,36 @@ class SolicitudCreate(BaseModel):
     observaciones: Optional[str] = ""
     fotos_antes: Optional[List[str]] = []
 
+class SolicitudEdit(BaseModel):
+    nombre_vecino: Optional[str] = None
+    rut: Optional[str] = None
+    direccion: Optional[str] = None
+    telefono: Optional[str] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    observaciones: Optional[str] = None
+    fotos_antes: Optional[List[str]] = None
+
+class DesmalezadoEdit(BaseModel):
+    nombre_solicitante: Optional[str] = None
+    es_recordatorio: Optional[bool] = None
+    direccion: Optional[str] = None
+    descripcion: Optional[str] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    fotos_antes: Optional[List[str]] = None
+
+class CaminoEdit(BaseModel):
+    nombre_solicitante: Optional[str] = None
+    es_recordatorio: Optional[bool] = None
+    direccion: Optional[str] = None
+    tipo_camino: Optional[str] = None
+    descripcion_problema: Optional[str] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    fotos_antes: Optional[List[str]] = None
+    prioridad: Optional[str] = None
+
 class ClusteringRequest(BaseModel):
     radio_metros: Optional[int] = 100
     dias_uso: int = 7
@@ -369,6 +399,42 @@ def listar_solicitudes(estado: Optional[str] = None):
     except Exception as e:
         conn.close(); raise HTTPException(status_code=500,detail=str(e))
 
+@app.put("/api/solicitudes/{id}/editar")
+def editar_solicitud(id: str, data: SolicitudEdit):
+    """Edita cualquier campo de una solicitud de batea"""
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM solicitudes WHERE id=%s", [id])
+        actual = cur.fetchone()
+        if not actual:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+        # Solo actualiza los campos que vienen en el request (los demás quedan igual)
+        campos = {}
+        if data.nombre_vecino  is not None: campos["nombre_vecino"]  = data.nombre_vecino
+        if data.rut            is not None: campos["rut"]            = data.rut
+        if data.direccion      is not None: campos["direccion"]      = data.direccion
+        if data.telefono       is not None: campos["telefono"]       = data.telefono
+        if data.latitud        is not None: campos["latitud"]        = data.latitud
+        if data.longitud       is not None: campos["longitud"]       = data.longitud
+        if data.observaciones  is not None: campos["observaciones"]  = data.observaciones
+        if data.fotos_antes    is not None: campos["fotos_antes"]    = fotos_a_json(data.fotos_antes[:5])
+
+        if not campos:
+            cur.close(); conn.close()
+            return {"success": True, "mensaje": "Sin cambios"}
+
+        sets = ", ".join([f"{k}=%s" for k in campos])
+        vals = list(campos.values()) + [id]
+        cur.execute(f"UPDATE solicitudes SET {sets}, actualizado_en=NOW() WHERE id=%s", vals)
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Solicitud actualizada correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DESMALEZADOS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -427,6 +493,36 @@ def listar_desmalezados(estado: Optional[str]=None):
         } for r in rows],"total":len(rows)}
     except Exception as e:
         conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.put("/api/desmalezados/{id}/editar")
+def editar_desmalezado(id: str, data: DesmalezadoEdit):
+    """Edita cualquier campo de un desmalezado"""
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM desmalezados WHERE id=%s", [id])
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Desmalezado no encontrado")
+        campos = {}
+        if data.nombre_solicitante is not None: campos["nombre_solicitante"] = data.nombre_solicitante
+        if data.es_recordatorio    is not None: campos["es_recordatorio"]    = data.es_recordatorio
+        if data.direccion          is not None: campos["direccion"]          = data.direccion
+        if data.descripcion        is not None: campos["descripcion"]        = data.descripcion
+        if data.latitud            is not None: campos["latitud"]            = data.latitud
+        if data.longitud           is not None: campos["longitud"]           = data.longitud
+        if data.fotos_antes        is not None: campos["fotos_antes"]        = fotos_a_json(data.fotos_antes[:5])
+        if not campos:
+            cur.close(); conn.close()
+            return {"success": True, "mensaje": "Sin cambios"}
+        sets = ", ".join([f"{k}=%s" for k in campos])
+        vals = list(campos.values()) + [id]
+        cur.execute(f"UPDATE desmalezados SET {sets} WHERE id=%s", vals)
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Desmalezado actualizado correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/desmalezados/{id}/asignar")
 def asignar_desmalezado(id: str, data: AsignacionRequest):
@@ -503,6 +599,38 @@ def listar_caminos(estado: Optional[str]=None):
         } for r in rows],"total":len(rows)}
     except Exception as e:
         conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.put("/api/caminos/{id}/editar")
+def editar_camino(id: str, data: CaminoEdit):
+    """Edita cualquier campo de un arreglo de camino"""
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM arreglo_caminos WHERE id=%s", [id])
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Camino no encontrado")
+        campos = {}
+        if data.nombre_solicitante  is not None: campos["nombre_solicitante"]  = data.nombre_solicitante
+        if data.es_recordatorio     is not None: campos["es_recordatorio"]     = data.es_recordatorio
+        if data.direccion           is not None: campos["direccion"]           = data.direccion
+        if data.tipo_camino         is not None: campos["tipo_camino"]         = data.tipo_camino
+        if data.descripcion_problema is not None: campos["descripcion_problema"] = data.descripcion_problema
+        if data.latitud             is not None: campos["latitud"]             = data.latitud
+        if data.longitud            is not None: campos["longitud"]            = data.longitud
+        if data.fotos_antes         is not None: campos["fotos_antes"]         = fotos_a_json(data.fotos_antes[:5])
+        if data.prioridad           is not None: campos["prioridad"]           = data.prioridad
+        if not campos:
+            cur.close(); conn.close()
+            return {"success": True, "mensaje": "Sin cambios"}
+        sets = ", ".join([f"{k}=%s" for k in campos])
+        vals = list(campos.values()) + [id]
+        cur.execute(f"UPDATE arreglo_caminos SET {sets} WHERE id=%s", vals)
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Camino actualizado correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/caminos/{id}/asignar")
 def asignar_camino(id: str, data: AsignacionRequest):
