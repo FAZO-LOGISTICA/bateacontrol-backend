@@ -261,9 +261,12 @@ def obtener_historial_vecino(conn, rut):
 # ── MODELOS ───────────────────────────────────────────────────────────────────
 
 class SolicitudCreate(BaseModel):
-    nombre_vecino: str; rut: str; direccion: str
+    nombre_vecino: str
+    rut: Optional[str] = "SIN-RUT"
+    direccion: Optional[str] = "Sin dirección"
     telefono: Optional[str] = ""
-    latitud: float; longitud: float
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
     observaciones: Optional[str] = ""
     fotos_antes: Optional[List[str]] = []
 
@@ -309,16 +312,20 @@ class AsignacionRequest(BaseModel):
 class DesmalezadoCreate(BaseModel):
     nombre_solicitante: Optional[str] = ""
     es_recordatorio: bool = False
-    direccion: str; descripcion: Optional[str] = ""
-    latitud: float; longitud: float
+    direccion: str
+    descripcion: Optional[str] = ""
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
     fotos_antes: Optional[List[str]] = []
 
 class CaminoCreate(BaseModel):
     nombre_solicitante: Optional[str] = ""
     es_recordatorio: bool = False
-    direccion: str; tipo_camino: Optional[str] = "camino"
+    direccion: str
+    tipo_camino: Optional[str] = "camino"
     descripcion_problema: Optional[str] = ""
-    latitud: float; longitud: float
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
     fotos_antes: Optional[List[str]] = []
     prioridad: Optional[str] = "normal"
 
