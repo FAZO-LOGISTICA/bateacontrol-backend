@@ -843,6 +843,43 @@ def cerrar_operativo_central(id: str, data: OperativoCentralCierre):
     except Exception as e:
         conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
 
+@app.put("/api/operativos-centrales/{id}/editar")
+def editar_operativo_central(id: str, data: OperativoCentralCreate):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM operativos_centrales WHERE id=%s", [id])
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="Operativo no encontrado")
+        fp = parse_fecha(data.fecha_programada) if data.fecha_programada else None
+        campos = {}
+        if data.titulo               : campos["titulo"]               = data.titulo
+        if data.descripcion is not None: campos["descripcion"]        = data.descripcion
+        if data.tipo_operativo       : campos["tipo_operativo"]        = data.tipo_operativo
+        if data.departamento is not None: campos["departamento"]      = data.departamento
+        if data.responsable_principal is not None: campos["responsable_principal"] = data.responsable_principal
+        if data.equipo is not None   : campos["equipo"]               = json.dumps(data.equipo)
+        if data.prioridad            : campos["prioridad"]             = data.prioridad
+        if data.latitud is not None  : campos["latitud"]              = data.latitud
+        if data.longitud is not None : campos["longitud"]             = data.longitud
+        if data.sector is not None   : campos["sector"]               = data.sector
+        if data.fecha_programada     : campos["fecha_programada"]     = fp
+        if data.servicios_incluidos is not None: campos["servicios_incluidos"] = json.dumps(data.servicios_incluidos)
+        if data.observaciones is not None: campos["observaciones"]    = data.observaciones
+        if data.fotos_antes is not None: campos["fotos_antes"]        = fotos_a_json(data.fotos_antes[:5])
+        if not campos:
+            cur.close(); conn.close()
+            return {"success": True, "mensaje": "Sin cambios"}
+        sets = ", ".join([f"{k}=%s" for k in campos])
+        vals = list(campos.values()) + [id]
+        cur.execute(f"UPDATE operativos_centrales SET {sets} WHERE id=%s", vals)
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Operativo Central actualizado correctamente"}
+    except HTTPException: raise
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/api/operativos-centrales/{id}")
 def eliminar_operativo_central(id: str):
     conn = get_db()
