@@ -73,9 +73,12 @@ def init_db():
             id VARCHAR(50) PRIMARY KEY,
             folio VARCHAR(30) UNIQUE,
             nombre_solicitante VARCHAR(150),
+            rut VARCHAR(15) DEFAULT 'SIN-RUT',
+            telefono VARCHAR(20),
             es_recordatorio BOOLEAN DEFAULT FALSE,
             direccion VARCHAR(255) NOT NULL,
             descripcion TEXT,
+            observaciones TEXT,
             latitud DECIMAL(10,8),
             longitud DECIMAL(11,8),
             fotos_antes TEXT DEFAULT '[]',
@@ -95,7 +98,10 @@ def init_db():
     for col, tipo in [
         ("fecha_inicio","TIMESTAMP"),("fecha_termino","TIMESTAMP"),
         ("dias_uso","INTEGER"),("responsable","VARCHAR(150)"),
-        ("fotos_antes","TEXT DEFAULT '[]'"),("fotos_despues","TEXT DEFAULT '[]'")
+        ("fotos_antes","TEXT DEFAULT '[]'"),("fotos_despues","TEXT DEFAULT '[]'"),
+        ("rut","VARCHAR(15) DEFAULT 'SIN-RUT'"),
+        ("telefono","VARCHAR(20)"),
+        ("observaciones","TEXT"),
     ]:
         try: cur.execute(f"ALTER TABLE desmalezados ADD COLUMN IF NOT EXISTS {col} {tipo}")
         except: conn.rollback()
@@ -106,10 +112,13 @@ def init_db():
             id VARCHAR(50) PRIMARY KEY,
             folio VARCHAR(30) UNIQUE,
             nombre_solicitante VARCHAR(150),
+            rut VARCHAR(15) DEFAULT 'SIN-RUT',
+            telefono VARCHAR(20),
             es_recordatorio BOOLEAN DEFAULT FALSE,
             direccion VARCHAR(255) NOT NULL,
             tipo_camino VARCHAR(50) DEFAULT 'camino',
             descripcion_problema TEXT,
+            observaciones TEXT,
             latitud DECIMAL(10,8),
             longitud DECIMAL(11,8),
             fotos_antes TEXT DEFAULT '[]',
@@ -129,10 +138,43 @@ def init_db():
     for col, tipo in [
         ("fecha_inicio","TIMESTAMP"),("fecha_termino","TIMESTAMP"),
         ("dias_uso","INTEGER"),("responsable","VARCHAR(150)"),
-        ("fotos_antes","TEXT DEFAULT '[]'"),("fotos_despues","TEXT DEFAULT '[]'")
+        ("fotos_antes","TEXT DEFAULT '[]'"),("fotos_despues","TEXT DEFAULT '[]'"),
+        ("rut","VARCHAR(15) DEFAULT 'SIN-RUT'"),
+        ("telefono","VARCHAR(20)"),
+        ("observaciones","TEXT"),
     ]:
         try: cur.execute(f"ALTER TABLE arreglo_caminos ADD COLUMN IF NOT EXISTS {col} {tipo}")
         except: conn.rollback()
+
+    # ── OPERATIVOS CENTRALES ───────────────────────────────────────────────
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS operativos_centrales (
+            id VARCHAR(50) PRIMARY KEY,
+            codigo VARCHAR(30) UNIQUE,
+            titulo VARCHAR(255) NOT NULL,
+            descripcion TEXT,
+            tipo_operativo VARCHAR(100) DEFAULT 'general',
+            departamento VARCHAR(150),
+            responsable_principal VARCHAR(150),
+            equipo TEXT DEFAULT '[]',
+            estado VARCHAR(30) DEFAULT 'planificado',
+            prioridad VARCHAR(20) DEFAULT 'normal',
+            latitud DECIMAL(10,8),
+            longitud DECIMAL(11,8),
+            sector VARCHAR(150),
+            fecha_programada TIMESTAMP,
+            fecha_inicio TIMESTAMP,
+            fecha_termino TIMESTAMP,
+            dias_uso INTEGER,
+            fotos_antes TEXT DEFAULT '[]',
+            fotos_despues TEXT DEFAULT '[]',
+            servicios_incluidos TEXT DEFAULT '[]',
+            observaciones TEXT,
+            observaciones_cierre TEXT,
+            fecha_cierre TIMESTAMP,
+            creado_en TIMESTAMP DEFAULT NOW()
+        )
+    """)
 
     # ── OPERATIVOS CONJUNTOS ───────────────────────────────────────────────
     cur.execute("""
@@ -311,21 +353,55 @@ class AsignacionRequest(BaseModel):
 
 class DesmalezadoCreate(BaseModel):
     nombre_solicitante: Optional[str] = ""
+    rut: Optional[str] = "SIN-RUT"
+    telefono: Optional[str] = ""
     es_recordatorio: bool = False
     direccion: str
     descripcion: Optional[str] = ""
+    observaciones: Optional[str] = ""
     latitud: Optional[float] = None
     longitud: Optional[float] = None
     fotos_antes: Optional[List[str]] = []
 
 class CaminoCreate(BaseModel):
     nombre_solicitante: Optional[str] = ""
+    rut: Optional[str] = "SIN-RUT"
+    telefono: Optional[str] = ""
     es_recordatorio: bool = False
     direccion: str
     tipo_camino: Optional[str] = "camino"
     descripcion_problema: Optional[str] = ""
+    observaciones: Optional[str] = ""
     latitud: Optional[float] = None
     longitud: Optional[float] = None
+    fotos_antes: Optional[List[str]] = []
+    prioridad: Optional[str] = "normal"
+
+class OperativoCentralCreate(BaseModel):
+    titulo: str
+    descripcion: Optional[str] = ""
+    tipo_operativo: Optional[str] = "general"
+    departamento: Optional[str] = ""
+    responsable_principal: Optional[str] = ""
+    equipo: Optional[List[str]] = []
+    prioridad: Optional[str] = "normal"
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    sector: Optional[str] = ""
+    fecha_programada: Optional[str] = None
+    servicios_incluidos: Optional[List[str]] = []
+    observaciones: Optional[str] = ""
+    fotos_antes: Optional[List[str]] = []
+
+class OperativoCentralAsignar(BaseModel):
+    fecha_inicio: str
+    dias_uso: int
+    responsable_principal: Optional[str] = ""
+    equipo: Optional[List[str]] = []
+
+class OperativoCentralCierre(BaseModel):
+    fotos_despues: Optional[List[str]] = []
+    observaciones_cierre: Optional[str] = ""
     fotos_antes: Optional[List[str]] = []
     prioridad: Optional[str] = "normal"
 
@@ -455,18 +531,19 @@ def crear_desmalezado(data: DesmalezadoCreate):
         fotos_json = fotos_a_json(data.fotos_antes[:5])
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO desmalezados (id,folio,nombre_solicitante,es_recordatorio,direccion,descripcion,latitud,longitud,fotos_antes,estado,fecha_solicitud)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pendiente',NOW())
-        """, [did,folio,data.nombre_solicitante,data.es_recordatorio,data.direccion,data.descripcion,data.latitud,data.longitud,fotos_json])
+            INSERT INTO desmalezados (id,folio,nombre_solicitante,rut,telefono,es_recordatorio,direccion,descripcion,observaciones,latitud,longitud,fotos_antes,estado,fecha_solicitud)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pendiente',NOW())
+        """, [did,folio,data.nombre_solicitante,data.rut,data.telefono,data.es_recordatorio,data.direccion,data.descripcion,data.observaciones,data.latitud,data.longitud,fotos_json])
         cur2 = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur2.execute("SELECT id,nombre_vecino,direccion,latitud,longitud FROM solicitudes WHERE estado='pendiente' AND latitud IS NOT NULL AND longitud IS NOT NULL")
         bateas = cur2.fetchall(); cur2.close()
         sugerencia = None
-        for b in bateas:
-            dist = distancia_metros(data.latitud,data.longitud,float(b["latitud"]),float(b["longitud"]))
-            if dist<=100:
-                sugerencia={"batea_id":b["id"],"vecino":b["nombre_vecino"],"direccion":b["direccion"],"distancia_metros":round(dist,1)}
-                break
+        if data.latitud and data.longitud:
+            for b in bateas:
+                dist = distancia_metros(data.latitud,data.longitud,float(b["latitud"]),float(b["longitud"]))
+                if dist<=100:
+                    sugerencia={"batea_id":b["id"],"vecino":b["nombre_vecino"],"direccion":b["direccion"],"distancia_metros":round(dist,1)}
+                    break
         conn.commit(); cur.close(); conn.close()
         return {"success":True,"id":did,"folio":folio,"mensaje":"Desmalezado registrado",
                 "sugerencia_operativo_conjunto":sugerencia,
@@ -486,7 +563,12 @@ def listar_desmalezados(estado: Optional[str]=None):
             "id":r["id"],"folio":r["folio"],
             "nombre_solicitante":r["nombre_solicitante"] or "Sin nombre",
             "es_recordatorio":r["es_recordatorio"],
+            "nombre_solicitante":r["nombre_solicitante"] or "Sin nombre",
+            "rut": r["rut"] or "SIN-RUT",
+            "telefono": r["telefono"] or "",
+            "es_recordatorio":r["es_recordatorio"],
             "direccion":r["direccion"],"descripcion":r["descripcion"] or "",
+            "observaciones": r["observaciones"] or "",
             "latitud":float(r["latitud"]) if r["latitud"] else 0,
             "longitud":float(r["longitud"]) if r["longitud"] else 0,
             "fotos_antes":parse_fotos(r.get("fotos_antes")),
@@ -662,6 +744,119 @@ def cerrar_camino(id: str, data: CierreRequest):
                     [fotos_json,data.observaciones_cierre,id])
         conn.commit(); cur.close(); conn.close()
         return {"success":True,"mensaje":"Camino cerrado exitosamente"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPERATIVOS CENTRALES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/operativos-centrales")
+def crear_operativo_central(data: OperativoCentralCreate):
+    conn = get_db()
+    try:
+        anio = datetime.now().year
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM operativos_centrales WHERE codigo LIKE %s", [f"OC-{anio}-%"])
+        total = cur.fetchone()[0]
+        codigo = f"OC-{anio}-{str(total+1).zfill(4)}"
+        oid = str(uuid.uuid4())
+        fp = parse_fecha(data.fecha_programada) if data.fecha_programada else None
+        cur.execute("""
+            INSERT INTO operativos_centrales (
+                id,codigo,titulo,descripcion,tipo_operativo,departamento,
+                responsable_principal,equipo,prioridad,latitud,longitud,sector,
+                fecha_programada,servicios_incluidos,observaciones,fotos_antes,
+                estado,creado_en
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'planificado',NOW())
+        """, [oid,codigo,data.titulo,data.descripcion,data.tipo_operativo,data.departamento,
+              data.responsable_principal,json.dumps(data.equipo),data.prioridad,
+              data.latitud,data.longitud,data.sector,fp,
+              json.dumps(data.servicios_incluidos),data.observaciones,
+              fotos_a_json(data.fotos_antes[:5])])
+        conn.commit(); cur.close(); conn.close()
+        return {"success":True,"id":oid,"codigo":codigo,"mensaje":f"Operativo Central {codigo} creado"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.get("/api/operativos-centrales")
+def listar_operativos_centrales():
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM operativos_centrales ORDER BY creado_en DESC")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return {"operativos_centrales":[{
+            "id":r["id"],"codigo":r["codigo"],"titulo":r["titulo"],
+            "descripcion":r["descripcion"] or "",
+            "tipo_operativo":r["tipo_operativo"] or "general",
+            "departamento":r["departamento"] or "",
+            "responsable_principal":r["responsable_principal"] or "",
+            "equipo":json.loads(r["equipo"]) if r["equipo"] else [],
+            "estado":r["estado"],"prioridad":r["prioridad"],
+            "latitud":float(r["latitud"]) if r["latitud"] else 0,
+            "longitud":float(r["longitud"]) if r["longitud"] else 0,
+            "sector":r["sector"] or "",
+            "fecha_programada":r["fecha_programada"].strftime("%d/%m/%Y") if r["fecha_programada"] else "",
+            "fecha_inicio":r["fecha_inicio"].strftime("%d/%m/%Y") if r["fecha_inicio"] else "",
+            "fecha_termino":r["fecha_termino"].strftime("%d/%m/%Y") if r["fecha_termino"] else "",
+            "dias_uso":r["dias_uso"] or 0,
+            "servicios_incluidos":json.loads(r["servicios_incluidos"]) if r["servicios_incluidos"] else [],
+            "observaciones":r["observaciones"] or "",
+            "observaciones_cierre":r["observaciones_cierre"] or "",
+            "fotos_antes":parse_fotos(r.get("fotos_antes")),
+            "fotos_despues":parse_fotos(r.get("fotos_despues")),
+            "creado_en":r["creado_en"].strftime("%d/%m/%Y %H:%M"),
+        } for r in rows],"total":len(rows)}
+    except Exception as e:
+        conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.put("/api/operativos-centrales/{id}/asignar")
+def asignar_operativo_central(id: str, data: OperativoCentralAsignar):
+    conn = get_db()
+    try:
+        fi = parse_fecha(data.fecha_inicio)
+        ft = fi + timedelta(days=data.dias_uso)
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE operativos_centrales SET estado='en_ejecucion',
+            fecha_inicio=%s,fecha_termino=%s,dias_uso=%s,
+            responsable_principal=%s,equipo=%s WHERE id=%s
+        """, [fi,ft,data.dias_uso,data.responsable_principal,json.dumps(data.equipo),id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success":True,"mensaje":f"Operativo asignado — {fi.strftime('%d/%m/%Y')} al {ft.strftime('%d/%m/%Y')} ({data.dias_uso} días)"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.put("/api/operativos-centrales/{id}/cerrar")
+def cerrar_operativo_central(id: str, data: OperativoCentralCierre):
+    conn = get_db()
+    try:
+        fotos_json = fotos_a_json(data.fotos_despues[:5])
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE operativos_centrales SET estado='completado',
+            fotos_despues=%s,observaciones_cierre=%s,fecha_cierre=NOW() WHERE id=%s
+        """, [fotos_json,data.observaciones_cierre,id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success":True,"mensaje":"Operativo Central cerrado exitosamente"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
+
+@app.delete("/api/operativos-centrales/{id}")
+def eliminar_operativo_central(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT codigo FROM operativos_centrales WHERE id=%s",[id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,detail="Operativo no encontrado")
+        cur.execute("DELETE FROM operativos_centrales WHERE id=%s",[id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success":True,"mensaje":f"Operativo {row[0]} eliminado"}
+    except HTTPException: raise
     except Exception as e:
         conn.rollback(); conn.close(); raise HTTPException(status_code=500,detail=str(e))
 
