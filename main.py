@@ -880,7 +880,139 @@ def editar_operativo_central(id: str, data: OperativoCentralCreate):
     except Exception as e:
         conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/operativos-centrales/{id}")
+@app.put("/api/solicitudes/{id}/realizar")
+def realizar_solicitud(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE solicitudes SET estado='instalada', actualizado_en=NOW() WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Batea marcada como Instalada"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/desmalezados/{id}/realizar")
+def realizar_desmalezado(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE desmalezados SET estado='completado', fecha_cierre=NOW() WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Desmalezado marcado como Completado"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/caminos/{id}/realizar")
+def realizar_camino(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE arreglo_caminos SET estado='completado', fecha_cierre=NOW() WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Arreglo de camino marcado como Completado"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/operativos-conjuntos/{id}/realizar")
+def realizar_operativo_conjunto(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE operativos_conjuntos SET estado='completado', fecha_cierre=NOW() WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Operativo Conjunto marcado como Completado"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/operativos-centrales/{id}/realizar")
+def realizar_operativo_central(id: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE operativos_centrales SET estado='completado', fecha_cierre=NOW() WHERE id=%s", [id])
+        conn.commit(); cur.close(); conn.close()
+        return {"success": True, "mensaje": "Operativo Central marcado como Completado"}
+    except Exception as e:
+        conn.rollback(); conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ESTADÍSTICAS GENERALES PARA DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/estadisticas")
+def estadisticas_generales():
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Bateas
+        cur.execute("""SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE estado='pendiente') as pendientes,
+            COUNT(*) FILTER (WHERE estado='asignada') as asignadas,
+            COUNT(*) FILTER (WHERE estado='instalada') as instaladas,
+            COUNT(*) FILTER (WHERE estado='completado') as completadas,
+            COUNT(*) FILTER (WHERE fecha_solicitud >= date_trunc('month', NOW())) as este_mes
+            FROM solicitudes""")
+        bateas = dict(cur.fetchone())
+        cur.execute("SELECT COUNT(*) as grupos FROM grupos_territoriales")
+        bateas["grupos"] = cur.fetchone()["grupos"]
+        # Desmalezados
+        cur.execute("""SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE estado='pendiente') as pendientes,
+            COUNT(*) FILTER (WHERE estado='asignado') as asignados,
+            COUNT(*) FILTER (WHERE estado='completado') as completados,
+            COUNT(*) FILTER (WHERE fecha_solicitud >= date_trunc('month', NOW())) as este_mes
+            FROM desmalezados""")
+        desmalezados = dict(cur.fetchone())
+        # Caminos
+        cur.execute("""SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE estado='pendiente') as pendientes,
+            COUNT(*) FILTER (WHERE estado='asignado') as asignados,
+            COUNT(*) FILTER (WHERE estado='completado') as completados,
+            COUNT(*) FILTER (WHERE fecha_solicitud >= date_trunc('month', NOW())) as este_mes
+            FROM arreglo_caminos""")
+        caminos = dict(cur.fetchone())
+        # Operativos conjuntos
+        cur.execute("""SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE estado='planificado') as planificados,
+            COUNT(*) FILTER (WHERE estado='completado') as completados,
+            COUNT(*) FILTER (WHERE fecha_planificacion >= date_trunc('month', NOW())) as este_mes
+            FROM operativos_conjuntos""")
+        op_conjuntos = dict(cur.fetchone())
+        # Operativos centrales
+        cur.execute("""SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE estado='planificado') as planificados,
+            COUNT(*) FILTER (WHERE estado='en_ejecucion') as en_ejecucion,
+            COUNT(*) FILTER (WHERE estado='completado') as completados,
+            COUNT(*) FILTER (WHERE creado_en >= date_trunc('month', NOW())) as este_mes
+            FROM operativos_centrales""")
+        op_centrales = dict(cur.fetchone())
+        cur.close(); conn.close()
+        # Total realizados (todas las categorías)
+        total_realizados = (
+            int(bateas.get("instaladas",0) or 0) +
+            int(bateas.get("completadas",0) or 0) +
+            int(desmalezados.get("completados",0) or 0) +
+            int(caminos.get("completados",0) or 0) +
+            int(op_conjuntos.get("completados",0) or 0) +
+            int(op_centrales.get("completados",0) or 0)
+        )
+        return {
+            "bateas": bateas,
+            "desmalezados": desmalezados,
+            "caminos": caminos,
+            "op_conjuntos": op_conjuntos,
+            "op_centrales": op_centrales,
+            "total_realizados": total_realizados,
+        }
+    except Exception as e:
+        conn.close(); raise HTTPException(status_code=500, detail=str(e))
+
+
 def eliminar_operativo_central(id: str):
     conn = get_db()
     try:
