@@ -428,9 +428,10 @@ def crear_solicitud(data: SolicitudCreate):
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT id, folio, fecha_solicitud FROM solicitudes WHERE rut=%s AND estado IN ('pendiente','agrupada')", [data.rut])
         pendiente = cur.fetchone()
+        # Ya no bloquea — solo avisa. El vecino puede tener batea Y desmalezado Y camino al mismo tiempo.
+        alerta_duplicado_batea = None
         if pendiente:
-            cur.close(); conn.close()
-            raise HTTPException(status_code=400, detail=f"Vecino ya tiene solicitud pendiente: {pendiente['folio']} del {pendiente['fecha_solicitud'].strftime('%d/%m/%Y')}")
+            alerta_duplicado_batea = f"⚠️ Este vecino ya tiene una solicitud de batea pendiente: {pendiente['folio']} del {pendiente['fecha_solicitud'].strftime('%d/%m/%Y')}"
         historial = obtener_historial_vecino(conn, data.rut)
         folio = gen_folio(conn, "SOL", "solicitudes")
         sid = str(uuid.uuid4())
@@ -442,9 +443,16 @@ def crear_solicitud(data: SolicitudCreate):
         conn.commit(); cur.close(); conn.close()
         return {
             "success":True,"id":sid,"folio":folio,
+            "nombre_vecino": data.nombre_vecino,
+            "rut": data.rut,
+            "direccion": data.direccion,
+            "telefono": data.telefono or "",
+            "latitud": data.latitud,
+            "longitud": data.longitud,
             "mensaje":"Solicitud registrada exitosamente",
             "tuvo_batea_antes":len(historial)>0,"historial_previo":historial,
-            "alerta_duplicado":f"⚠️ Este vecino ya recibió la batea {historial[0]['numero_batea']} el {historial[0]['fecha_asignacion']} por {historial[0]['dias_uso']} días" if historial else None
+            "alerta_duplicado": alerta_duplicado_batea,
+            "alerta_historial":f"⚠️ Este vecino ya recibió la batea {historial[0]['numero_batea']} el {historial[0]['fecha_asignacion']} por {historial[0]['dias_uso']} días" if historial else None
         }
     except HTTPException: raise
     except Exception as e:
